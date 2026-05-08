@@ -1,0 +1,1045 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AquaGuard — Pump Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0f0a;
+    --surface: #111811;
+    --surface2: #162016;
+    --border: #1e2e1e;
+    --green: #4ade80;
+    --green-dim: #22c55e;
+    --green-glow: rgba(74, 222, 128, 0.15);
+    --green-deep: #166534;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --red-dim: #dc2626;
+    --text: #e2f0e2;
+    --text-dim: #6b8f6b;
+    --text-muted: #3d5c3d;
+    --mono: 'Space Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Subtle grid texture */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(74,222,128,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(74,222,128,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ─── Header ─── */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10,15,10,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--green), #16a34a);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    box-shadow: 0 0 16px rgba(74,222,128,0.3);
+    flex-shrink: 0;
+  }
+
+  .logo-text {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--green);
+  }
+
+  .logo-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-top: 1px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  /* MQTT status pill */
+  .mqtt-pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 11px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    transition: all 0.4s ease;
+  }
+
+  .mqtt-pill.connected {
+    border-color: rgba(74,222,128,0.4);
+    color: var(--green);
+    background: rgba(74,222,128,0.06);
+  }
+
+  .mqtt-pill.disconnected {
+    border-color: rgba(248,113,113,0.4);
+    color: var(--red);
+    background: rgba(248,113,113,0.06);
+  }
+
+  .mqtt-pill.connecting {
+    border-color: rgba(251,191,36,0.4);
+    color: var(--amber);
+    background: rgba(251,191,36,0.06);
+  }
+
+  .mqtt-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+
+  .mqtt-pill.connected .mqtt-dot {
+    animation: pulse-dot 2s infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.7); }
+  }
+
+  /* ─── Main layout ─── */
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    display: grid;
+    gap: 16px;
+  }
+
+  /* ─── Pump status hero ─── */
+  .pump-hero {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .pump-hero::after {
+    content: '';
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 200px; height: 200px;
+    border-radius: 50%;
+    background: var(--green-glow);
+    filter: blur(40px);
+    pointer-events: none;
+    transition: opacity 0.6s;
+  }
+
+  .pump-hero.off::after {
+    background: rgba(248,113,113,0.08);
+  }
+
+  .pump-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .pump-orb {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+    transition: all 0.6s ease;
+    position: relative;
+  }
+
+  .pump-orb.on {
+    background: radial-gradient(circle, rgba(74,222,128,0.25) 0%, rgba(74,222,128,0.05) 70%);
+    border: 2px solid rgba(74,222,128,0.5);
+    box-shadow: 0 0 24px rgba(74,222,128,0.3);
+  }
+
+  .pump-orb.off {
+    background: radial-gradient(circle, rgba(248,113,113,0.15) 0%, rgba(248,113,113,0.03) 70%);
+    border: 2px solid rgba(248,113,113,0.3);
+  }
+
+  .pump-orb.on::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    border: 1px solid rgba(74,222,128,0.2);
+    animation: orbit-ring 3s linear infinite;
+  }
+
+  @keyframes orbit-ring {
+    from { transform: rotate(0deg) scale(1); opacity: 0.8; }
+    50% { opacity: 0.3; transform: rotate(180deg) scale(1.05); }
+    to { transform: rotate(360deg) scale(1); opacity: 0.8; }
+  }
+
+  .pump-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+
+  .pump-state {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    transition: color 0.4s;
+  }
+
+  .pump-state.on { color: var(--green); }
+  .pump-state.off { color: var(--red); }
+
+  .pump-meta {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+
+  .pump-meta-item {
+    text-align: center;
+  }
+
+  .pump-meta-item .val {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .pump-meta-item .lbl {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* Relay buttons */
+  .relay-btns {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .btn-relay {
+    padding: 10px 22px;
+    border-radius: 10px;
+    border: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+  }
+
+  .btn-on {
+    background: linear-gradient(135deg, #16a34a, #15803d);
+    color: #fff;
+    box-shadow: 0 0 16px rgba(34,197,94,0.35);
+  }
+
+  .btn-on:hover { box-shadow: 0 0 24px rgba(34,197,94,0.55); transform: translateY(-1px); }
+  .btn-on:active { transform: translateY(0); }
+
+  .btn-off {
+    background: rgba(248,113,113,0.12);
+    color: var(--red);
+    border: 1px solid rgba(248,113,113,0.35);
+  }
+
+  .btn-off:hover { background: rgba(248,113,113,0.2); transform: translateY(-1px); }
+  .btn-off:active { transform: translateY(0); }
+
+  .btn-relay:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+  }
+
+  /* ─── Gauge grid ─── */
+  .gauges-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  @media (min-width: 640px) {
+    .gauges-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+
+  .gauge-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 14px 14px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.3s;
+  }
+
+  .gauge-card:hover { border-color: rgba(74,222,128,0.25); }
+
+  .gauge-card::before {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--accent, var(--green));
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left;
+    transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+    border-radius: 0 0 14px 14px;
+  }
+
+  .gauge-icon {
+    font-size: 20px;
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  .gauge-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    font-family: var(--mono);
+  }
+
+  .gauge-value {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+    transition: color 0.3s;
+  }
+
+  .gauge-unit {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-left: 3px;
+  }
+
+  .gauge-bar-wrap {
+    margin-top: 10px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .gauge-bar {
+    height: 100%;
+    background: var(--accent, var(--green));
+    border-radius: 2px;
+    transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+    position: relative;
+  }
+
+  .gauge-bar::after {
+    content: '';
+    position: absolute;
+    right: 0; top: -1px;
+    width: 8px; height: 6px;
+    background: var(--accent, var(--green));
+    border-radius: 2px;
+    filter: brightness(1.5);
+  }
+
+  /* ─── Section title ─── */
+  .section-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ─── Chart ─── */
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+  }
+
+  .chart-wrap {
+    position: relative;
+    height: 220px;
+  }
+
+  /* ─── Alert log ─── */
+  .alert-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+  }
+
+  .alert-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 280px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .alert-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    animation: alert-in 0.3s ease;
+  }
+
+  @keyframes alert-in {
+    from { opacity: 0; transform: translateX(-8px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .alert-badge {
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .badge-DRY_RUN   { background: rgba(251,191,36,0.15); color: var(--amber); border: 1px solid rgba(251,191,36,0.3); }
+  .badge-OVERHEAT  { background: rgba(248,113,113,0.15); color: var(--red);   border: 1px solid rgba(248,113,113,0.3); }
+  .badge-OVERTIME  { background: rgba(147,197,253,0.12); color: #93c5fd;       border: 1px solid rgba(147,197,253,0.25); }
+  .badge-INFO      { background: rgba(74,222,128,0.1);  color: var(--green);  border: 1px solid rgba(74,222,128,0.2); }
+
+  .alert-msg {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.4;
+  }
+
+  .alert-time {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .alert-empty {
+    text-align: center;
+    padding: 32px 0;
+    font-size: 13px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+
+  /* ─── Bottom stats row ─── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  @media (min-width: 480px) {
+    .stats-row { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-family: var(--mono);
+    margin-bottom: 5px;
+  }
+
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  /* ─── Toast ─── */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    z-index: 999;
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    white-space: nowrap;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+
+  #toast.show { transform: translateX(-50%) translateY(0); }
+
+  /* ─── Responsive ─── */
+  @media (min-width: 768px) {
+    .bottom-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+  }
+
+  .last-update {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    text-align: right;
+    padding: 0 4px;
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- ─── Header ─── -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">💧</div>
+    <div>
+      <div class="logo-text">AQUAGUARD</div>
+      <div class="logo-sub">Irrigation Monitor</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="mqtt-pill disconnected" id="mqttPill">
+      <span class="mqtt-dot"></span>
+      <span id="mqttPillText">OFFLINE</span>
+    </div>
+  </div>
+</header>
+
+<!-- ─── Main ─── -->
+<main>
+
+  <!-- Pump Hero -->
+  <div class="pump-hero off" id="pumpHero">
+    <div class="pump-info">
+      <div class="pump-orb off" id="pumpOrb">⚡</div>
+      <div>
+        <div class="pump-label">Pump Status</div>
+        <div class="pump-state off" id="pumpState">OFFLINE</div>
+      </div>
+    </div>
+    <div class="pump-meta" id="pumpMeta">
+      <div class="pump-meta-item">
+        <div class="val" id="metaRunMin">—</div>
+        <div class="lbl">Run Time (min)</div>
+      </div>
+      <div class="pump-meta-item">
+        <div class="val" id="metaUptime">—</div>
+        <div class="lbl">Uptime (s)</div>
+      </div>
+      <div class="pump-meta-item">
+        <div class="val" id="metaHumidity">—</div>
+        <div class="lbl">Humidity (%)</div>
+      </div>
+    </div>
+    <div class="relay-btns">
+      <button class="btn-relay btn-on" id="btnOn" onclick="sendRelay('ON')" disabled>▶ PUMP ON</button>
+      <button class="btn-relay btn-off" id="btnOff" onclick="sendRelay('OFF')" disabled>■ PUMP OFF</button>
+    </div>
+  </div>
+
+  <!-- Gauges -->
+  <div>
+    <div class="section-title">LIVE SENSORS</div>
+    <div class="gauges-grid">
+      <div class="gauge-card" id="gaugeFlow" style="--accent:#4ade80">
+        <span class="gauge-icon">🌊</span>
+        <div class="gauge-label">Flow Rate</div>
+        <div><span class="gauge-value" id="valFlow">—</span><span class="gauge-unit">L/min</span></div>
+        <div class="gauge-bar-wrap"><div class="gauge-bar" id="barFlow" style="width:0%;--accent:#4ade80"></div></div>
+      </div>
+      <div class="gauge-card" id="gaugeCurrent" style="--accent:#fbbf24">
+        <span class="gauge-icon">⚡</span>
+        <div class="gauge-label">Motor Current</div>
+        <div><span class="gauge-value" id="valCurrent">—</span><span class="gauge-unit">A</span></div>
+        <div class="gauge-bar-wrap"><div class="gauge-bar" id="barCurrent" style="width:0%;--accent:#fbbf24"></div></div>
+      </div>
+      <div class="gauge-card" id="gaugeMoisture" style="--accent:#22d3ee">
+        <span class="gauge-icon">🌱</span>
+        <div class="gauge-label">Soil Moisture</div>
+        <div><span class="gauge-value" id="valMoisture">—</span><span class="gauge-unit">%</span></div>
+        <div class="gauge-bar-wrap"><div class="gauge-bar" id="barMoisture" style="width:0%;--accent:#22d3ee"></div></div>
+      </div>
+      <div class="gauge-card" id="gaugeTemp" style="--accent:#f87171">
+        <span class="gauge-icon">🌡️</span>
+        <div class="gauge-label">Temperature</div>
+        <div><span class="gauge-value" id="valTemp">—</span><span class="gauge-unit">°C</span></div>
+        <div class="gauge-bar-wrap"><div class="gauge-bar" id="barTemp" style="width:0%;--accent:#f87171"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart + Alerts -->
+  <div class="bottom-grid">
+    <!-- Chart -->
+    <div>
+      <div class="section-title">HISTORY (LAST 50)</div>
+      <div class="chart-card">
+        <div class="chart-wrap">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </div>
+    </div>
+    <!-- Alert log -->
+    <div>
+      <div class="section-title">ALERT LOG</div>
+      <div class="alert-card">
+        <div class="alert-list" id="alertList">
+          <div class="alert-empty" id="alertEmpty">No alerts yet — system nominal ✓</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats row -->
+  <div>
+    <div class="section-title">SESSION STATS</div>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Packets Received</div>
+        <div class="stat-value" id="statPackets">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Alerts Logged</div>
+        <div class="stat-value" id="statAlerts">0</div>
+      </div>
+      <div class="stat-card" style="grid-column: span 2;" id="statUpCard">
+        <div class="stat-label">Last Update</div>
+        <div class="stat-value" id="statLastUpdate">—</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────
+//  Config
+// ─────────────────────────────────────────────
+const BROKER    = 'wss://broker.hivemq.com:8884/mqtt';
+const TOPICS = {
+  data:   'pump/data',
+  alerts: 'pump/alerts',
+  status: 'pump/status',
+  relay:  'pump/relay/set'
+};
+const MAX_HISTORY = 50;
+const MAX_ALERTS  = 20;
+
+// ─────────────────────────────────────────────
+//  State
+// ─────────────────────────────────────────────
+let mqttClient   = null;
+let packetCount  = 0;
+let alertCount   = 0;
+let mqttReady    = false;
+let offlineTimer = null;
+
+const history = { labels:[], flow:[], current:[], moisture:[], temp:[] };
+
+// ─────────────────────────────────────────────
+//  Chart
+// ─────────────────────────────────────────────
+const ctx = document.getElementById('historyChart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: history.labels,
+    datasets: [
+      { label:'Flow (L/min)',    data: history.flow,     borderColor:'#4ade80', backgroundColor:'rgba(74,222,128,0.06)', borderWidth:1.5, pointRadius:0, tension:0.4 },
+      { label:'Current (A)',     data: history.current,  borderColor:'#fbbf24', backgroundColor:'rgba(251,191,36,0.06)', borderWidth:1.5, pointRadius:0, tension:0.4 },
+      { label:'Moisture (%/10)',  data: history.moisture, borderColor:'#22d3ee', backgroundColor:'rgba(34,211,238,0.06)', borderWidth:1.5, pointRadius:0, tension:0.4 },
+      { label:'Temp (°C)',       data: history.temp,     borderColor:'#f87171', backgroundColor:'rgba(248,113,113,0.06)', borderWidth:1.5, pointRadius:0, tension:0.4 },
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 200 },
+    interaction: { intersect: false, mode: 'index' },
+    plugins: {
+      legend: {
+        labels: { color:'#6b8f6b', font:{ family:"'Space Mono', monospace", size:9 }, boxWidth:10, padding:14 }
+      },
+      tooltip: {
+        backgroundColor:'rgba(17,24,17,0.95)',
+        borderColor:'#1e2e1e',
+        borderWidth:1,
+        titleColor:'#4ade80',
+        bodyColor:'#e2f0e2',
+        titleFont:{ family:"'Space Mono', monospace", size:10 },
+        bodyFont:{ family:"'Space Mono', monospace", size:10 },
+      }
+    },
+    scales: {
+      x: { ticks:{ color:'#3d5c3d', font:{size:8, family:"'Space Mono', monospace"}, maxTicksLimit:8 }, grid:{color:'rgba(30,46,30,0.6)'} },
+      y: { ticks:{ color:'#3d5c3d', font:{size:8, family:"'Space Mono', monospace"} }, grid:{color:'rgba(30,46,30,0.6)'} }
+    }
+  }
+});
+
+// ─────────────────────────────────────────────
+//  MQTT
+// ─────────────────────────────────────────────
+function initMQTT() {
+  setMqttStatus('connecting');
+
+  const clientId = 'aquaguard_' + Math.random().toString(36).substr(2, 8);
+  mqttClient = mqtt.connect(BROKER, {
+    clientId,
+    clean: true,
+    reconnectPeriod: 5000,
+    connectTimeout: 10000,
+  });
+
+  mqttClient.on('connect', () => {
+    mqttReady = true;
+    setMqttStatus('connected');
+    showToast('✓ Connected to HiveMQ broker');
+    enableRelayBtns(true);
+
+    mqttClient.subscribe([TOPICS.data, TOPICS.alerts, TOPICS.status], (err) => {
+      if (err) console.error('Subscribe error:', err);
+    });
+  });
+
+  mqttClient.on('reconnect', () => {
+    mqttReady = false;
+    setMqttStatus('connecting');
+    enableRelayBtns(false);
+  });
+
+  mqttClient.on('disconnect', () => {
+    mqttReady = false;
+    setMqttStatus('disconnected');
+    enableRelayBtns(false);
+  });
+
+  mqttClient.on('offline', () => {
+    mqttReady = false;
+    setMqttStatus('disconnected');
+    enableRelayBtns(false);
+  });
+
+  mqttClient.on('error', (err) => {
+    console.error('MQTT error:', err);
+    setMqttStatus('disconnected');
+  });
+
+  mqttClient.on('message', (topic, payload) => {
+    const raw = payload.toString().trim();
+    handleMessage(topic, raw);
+  });
+}
+
+function handleMessage(topic, raw) {
+  if (topic === TOPICS.data) {
+    try {
+      const d = JSON.parse(raw);
+      updateDashboard(d);
+    } catch(e) { console.warn('Bad JSON on pump/data:', raw); }
+  } else if (topic === TOPICS.alerts) {
+    addAlert(raw);
+  } else if (topic === TOPICS.status) {
+    handleStatus(raw);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Dashboard update
+// ─────────────────────────────────────────────
+function updateDashboard(d) {
+  packetCount++;
+  document.getElementById('statPackets').textContent = packetCount;
+  document.getElementById('statLastUpdate').textContent = new Date().toLocaleTimeString();
+
+  // Pump hero
+  const on = d.pump_on === true || d.pump_on === 1;
+  const hero = document.getElementById('pumpHero');
+  const orb  = document.getElementById('pumpOrb');
+  const state = document.getElementById('pumpState');
+  hero.className  = 'pump-hero ' + (on ? 'on' : 'off');
+  orb.className   = 'pump-orb '  + (on ? 'on' : 'off');
+  state.className = 'pump-state ' + (on ? 'on' : 'off');
+  state.textContent = on ? 'RUNNING' : 'STOPPED';
+
+  safeSet('metaRunMin',  d.run_min  !== undefined ? d.run_min  : '—');
+  safeSet('metaUptime',  d.uptime   !== undefined ? d.uptime   : '—');
+  safeSet('metaHumidity',d.humidity !== undefined ? d.humidity.toFixed(1) : '—');
+
+  // Gauges
+  setGauge('valFlow',     'barFlow',     d.flow,     0, 30,  2);
+  setGauge('valCurrent',  'barCurrent',  d.current,  0, 15,  2);
+  setGauge('valMoisture', 'barMoisture', d.moisture, 0, 100, 1);
+  setGauge('valTemp',     'barTemp',     d.temp,     0, 80,  1);
+
+  // Color temp gauge on threshold
+  if (d.temp !== undefined) {
+    const tv = document.getElementById('valTemp');
+    tv.style.color = d.temp > 60 ? 'var(--red)' : d.temp > 45 ? 'var(--amber)' : 'var(--text)';
+  }
+
+  // History
+  const t = new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  push(history.labels,   t);
+  push(history.flow,     d.flow     ?? null);
+  push(history.current,  d.current  ?? null);
+  push(history.moisture, d.moisture !== undefined ? +(d.moisture / 10).toFixed(2) : null);
+  push(history.temp,     d.temp     ?? null);
+  chart.update('none');
+
+  // Reset offline timer
+  if (offlineTimer) clearTimeout(offlineTimer);
+  offlineTimer = setTimeout(() => {
+    document.getElementById('pumpState').textContent = 'NO DATA';
+  }, 30000);
+}
+
+function setGauge(valId, barId, val, min, max, dec) {
+  if (val === undefined || val === null) return;
+  document.getElementById(valId).textContent = val.toFixed(dec);
+  const pct = Math.min(100, Math.max(0, ((val - min) / (max - min)) * 100));
+  document.getElementById(barId).style.width = pct + '%';
+}
+
+function safeSet(id, val) {
+  document.getElementById(id).textContent = val;
+}
+
+function push(arr, val) {
+  arr.push(val);
+  if (arr.length > MAX_HISTORY) arr.shift();
+}
+
+// ─────────────────────────────────────────────
+//  Alert log
+// ─────────────────────────────────────────────
+function addAlert(raw) {
+  alertCount++;
+  document.getElementById('statAlerts').textContent = alertCount;
+
+  const list  = document.getElementById('alertList');
+  const empty = document.getElementById('alertEmpty');
+  if (empty) empty.remove();
+
+  // Detect alert type
+  let type = 'INFO';
+  const up = raw.toUpperCase();
+  if (up.includes('DRY_RUN') || up.includes('DRY RUN'))  type = 'DRY_RUN';
+  else if (up.includes('OVERHEAT') || up.includes('OVER HEAT')) type = 'OVERHEAT';
+  else if (up.includes('OVERTIME') || up.includes('OVER TIME'))  type = 'OVERTIME';
+
+  const time = new Date().toLocaleTimeString();
+  const item = document.createElement('div');
+  item.className = 'alert-item';
+  item.innerHTML = `
+    <span class="alert-badge badge-${type}">${type}</span>
+    <span class="alert-msg">${escHtml(raw)}</span>
+    <span class="alert-time">${time}</span>
+  `;
+
+  list.insertBefore(item, list.firstChild);
+
+  // Trim to MAX_ALERTS
+  while (list.children.length > MAX_ALERTS) {
+    list.removeChild(list.lastChild);
+  }
+
+  showToast('⚠ Alert: ' + type);
+}
+
+// ─────────────────────────────────────────────
+//  Status topic
+// ─────────────────────────────────────────────
+function handleStatus(raw) {
+  const lower = raw.toLowerCase();
+  if (lower === 'online') {
+    addAlert('ESP32 came online');
+  } else if (lower === 'offline') {
+    addAlert('ESP32 went offline');
+    document.getElementById('pumpState').textContent = 'OFFLINE';
+    document.getElementById('pumpState').className = 'pump-state off';
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Relay control
+// ─────────────────────────────────────────────
+function sendRelay(cmd) {
+  if (!mqttClient || !mqttReady) {
+    showToast('⚠ Not connected to broker');
+    return;
+  }
+  mqttClient.publish(TOPICS.relay, cmd, { qos: 1 }, (err) => {
+    if (err) {
+      showToast('✗ Publish failed');
+    } else {
+      showToast('✓ Relay command sent: ' + cmd);
+    }
+  });
+}
+
+function enableRelayBtns(en) {
+  document.getElementById('btnOn').disabled  = !en;
+  document.getElementById('btnOff').disabled = !en;
+}
+
+// ─────────────────────────────────────────────
+//  MQTT status UI
+// ─────────────────────────────────────────────
+function setMqttStatus(state) {
+  const pill = document.getElementById('mqttPill');
+  const text = document.getElementById('mqttPillText');
+  pill.className = 'mqtt-pill ' + state;
+  const map = { connected:'CONNECTED', disconnected:'OFFLINE', connecting:'CONNECTING…' };
+  text.textContent = map[state] || state.toUpperCase();
+}
+
+// ─────────────────────────────────────────────
+//  Toast
+// ─────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// ─────────────────────────────────────────────
+//  Util
+// ─────────────────────────────────────────────
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─────────────────────────────────────────────
+//  Boot
+// ─────────────────────────────────────────────
+window.addEventListener('load', () => {
+  initMQTT();
+});
+</script>
+</body>
+</html>
